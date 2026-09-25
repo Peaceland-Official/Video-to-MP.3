@@ -59,54 +59,121 @@ button:disabled{opacity:.45;cursor:not-allowed}
 </main>
 
 <script type="module">
-const picker=document.querySelector('#picker'), drop=document.querySelector('#drop'), convert=document.querySelector('#convert'),
-fileBox=document.querySelector('#fileBox'), fileName=document.querySelector('#fileName'), fileSize=document.querySelector('#fileSize'),
-quality=document.querySelector('#quality'), progressWrap=document.querySelector('#progressWrap'), statusEl=document.querySelector('#status'),
-percent=document.querySelector('#percent'), bar=document.querySelector('#bar'), download=document.querySelector('#download'), errorEl=document.querySelector('#error');
-let chosen=null, ffmpeg=null, fetchFile=null, outputURL=null;
+const picker=document.querySelector('#picker'),drop=document.querySelector('#drop'),convert=document.querySelector('#convert'),
+fileBox=document.querySelector('#fileBox'),fileName=document.querySelector('#fileName'),fileSize=document.querySelector('#fileSize'),
+quality=document.querySelector('#quality'),progressWrap=document.querySelector('#progressWrap'),statusEl=document.querySelector('#status'),
+percent=document.querySelector('#percent'),bar=document.querySelector('#bar'),download=document.querySelector('#download'),errorEl=document.querySelector('#error');
 
-const human=n=>n<1024*1024?(n/1024).toFixed(1)+' KB':(n/1024/1024).toFixed(1)+' MB';
-function setFile(f){if(!f)return; chosen=f;fileName.textContent=f.name;fileSize.textContent=human(f.size);fileBox.classList.add('show');convert.disabled=false;download.classList.remove('show');errorEl.style.display='none'}
-drop.onclick=()=>picker.click();drop.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();picker.click()}};
+let chosen=null,ffmpeg=null,fetchFile=null,outputURL=null,converterReady=false,converterPromise=null;
+const BASE='https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm';
+const human=n=>n<1048576?(n/1024).toFixed(1)+' KB':(n/1048576).toFixed(1)+' MB';
+
+function progress(label,p){
+  progressWrap.classList.add('show'); statusEl.textContent=label;
+  percent.textContent=Math.round(p)+'%'; bar.style.width=Math.max(0,Math.min(100,p))+'%';
+}
+function button(){
+  convert.disabled=!chosen||!converterReady;
+  convert.textContent=converterReady?'Convert to MP3':'Preparing converter…';
+}
+function setFile(f){
+  if(!f)return; chosen=f; fileName.textContent=f.name; fileSize.textContent=human(f.size);
+  fileBox.classList.add('show'); download.classList.remove('show'); errorEl.style.display='none'; button();
+}
+drop.onclick=()=>picker.click();
+drop.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();picker.click()}};
 picker.onchange=e=>setFile(e.target.files[0]);
 ['dragenter','dragover'].forEach(x=>drop.addEventListener(x,e=>{e.preventDefault();drop.classList.add('drag')}));
 ['dragleave','drop'].forEach(x=>drop.addEventListener(x,e=>{e.preventDefault();drop.classList.remove('drag')}));
 drop.addEventListener('drop',e=>setFile(e.dataTransfer.files[0]));
 
-async function loadFFmpeg(){
-  if(ffmpeg)return;
-  statusEl.textContent='Loading converter…';
-  const [{FFmpeg},{fetchFile:ff}] = await Promise.all([
-    import('https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js'),
-    import('https://unpkg.com/@ffmpeg/util@0.12.1/dist/esm/index.js')
-  ]);
-  fetchFile=ff; ffmpeg=new FFmpeg();
-  ffmpeg.on('progress',({progress})=>{let p=Math.max(0,Math.min(99,Math.round(progress*100)));percent.textContent=p+'%';bar.style.width=p+'%'});
-  await ffmpeg.load({
-    coreURL:'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm/ffmpeg-core.js',
-    wasmURL:'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm/ffmpeg-core.wasm'
-  });
+async function cachedURL(url,type,onProgress){
+  let cache=null,response=null;
+  try{cache=await caches.open('video-mp3-converter-v2');response=await cache.match(url)}catch(_){}
+  if(response){
+    onProgress(100,'Using cached converter…');
+    return URL.createObjectURL(new Blob([await response.blob()],{type}));
+  }
+  response=await fetch(url,{cache:'force-cache'});
+  if(!response.ok)throw new Error('Download failed');
+  const total=Number(response.headers.get('content-length'))||0;
+  if(!response.body||!total){
+    const blob=await response.blob();
+    try{if(cache)await cache.put(url,new Response(blob))}catch(_){}
+    onProgress(100,'Converter downloaded');
+    return URL.createObjectURL(new Blob([blob],{type}));
+  }
+  const reader=response.body.getReader(),chunks=[]; let received=0;
+  while(true){
+    const {done,value}=await reader.read(); if(done)break;
+    chunks.push(value); received+=value.length;
+    onProgress(received/total*100,'Downloading converter…');
+  }
+  const blob=new Blob(chunks,{type});
+  try{if(cache)await cache.put(url,new Response(blob,{headers:{'Content-Type':type}}))}catch(_){}
+  return URL.createObjectURL(blob);
 }
+
+async function loadFFmpeg(){
+  if(converterReady)return;
+  if(converterPromise)return converterPromise;
+  converterPromise=(async()=>{
+    try{
+      progress('Starting converter…',2);
+      const [{FFmpeg},{fetchFile:ff}]=await Promise.all([
+        import('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js'),
+        import('https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/esm/index.js')
+      ]);
+      fetchFile=ff; progress('Loading converter code…',8);
+      const [coreURL,wasmURL]=await Promise.all([
+        cachedURL(BASE+'/ffmpeg-core.js','text/javascript',(p,l)=>progress(l,8+p*.12)),
+        cachedURL(BASE+'/ffmpeg-core.wasm','application/wasm',(p,l)=>progress(l,20+p*.70))
+      ]);
+      progress('Starting audio engine…',92);
+      ffmpeg=new FFmpeg();
+      ffmpeg.on('progress',({progress:p})=>{
+        if(converterReady)progress('Converting…',Math.max(1,Math.min(99,Math.round(p*100))));
+      });
+      await ffmpeg.load({coreURL,wasmURL});
+      converterReady=true; progress('Converter ready',100); button();
+      setTimeout(()=>{if(!chosen)progressWrap.classList.remove('show')},1000);
+    }catch(e){
+      console.error(e); converterPromise=null; statusEl.textContent='Converter failed to load';
+      percent.textContent='0%';bar.style.width='0%';
+      errorEl.textContent='The converter could not load. Check your internet connection and refresh the page.';
+      errorEl.style.display='block';convert.textContent='Converter unavailable';
+    }
+  })();
+  return converterPromise;
+}
+
 convert.onclick=async()=>{
-  if(!chosen)return;
-  convert.disabled=true;download.classList.remove('show');errorEl.style.display='none';progressWrap.classList.add('show');percent.textContent='0%';bar.style.width='0%';
+  if(!chosen)return; convert.disabled=true;download.classList.remove('show');errorEl.style.display='none';
   try{
-    await loadFFmpeg();
-    statusEl.textContent='Converting…';
+    await loadFFmpeg(); if(!converterReady)throw new Error('Not ready');
+    progress('Preparing video…',0);
     const ext=(chosen.name.split('.').pop()||'mp4').replace(/[^a-z0-9]/gi,'').toLowerCase();
-    const input='input.'+ext, output='converted.mp3';
+    const input='input.'+ext,output='converted.mp3';
     await ffmpeg.writeFile(input,await fetchFile(chosen));
+    progress('Converting…',1);
     await ffmpeg.exec(['-i',input,'-vn','-codec:a','libmp3lame','-b:a',quality.value+'k',output]);
+    progress('Finishing MP3…',99);
     const data=await ffmpeg.readFile(output);
     if(outputURL)URL.revokeObjectURL(outputURL);
     outputURL=URL.createObjectURL(new Blob([data.buffer],{type:'audio/mpeg'}));
     download.href=outputURL;download.download=chosen.name.replace(/\.[^.]+$/,'')+'.mp3';download.classList.add('show');
-    statusEl.textContent='Conversion complete';percent.textContent='100%';bar.style.width='100%';
+    progress('Conversion complete',100);
     await ffmpeg.deleteFile(input);await ffmpeg.deleteFile(output);
   }catch(e){
-    console.error(e);statusEl.textContent='Conversion failed';errorEl.textContent='This browser could not convert the file. Try a smaller video or a modern desktop/mobile browser.';errorEl.style.display='block';
-  }finally{convert.disabled=false}
+    console.error(e);statusEl.textContent='Conversion failed';
+    errorEl.textContent='Conversion failed. On iPad, close other heavy tabs/apps and try again.';
+    errorEl.style.display='block';
+  }finally{button()}
 };
+
+// Preload immediately instead of waiting for a video to be selected.
+button();
+loadFFmpeg();
 </script>
 </body>
 </html>
