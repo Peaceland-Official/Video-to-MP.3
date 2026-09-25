@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Video to MP3</title>
+<style>
+:root{--bg:#f5f7fb;--card:#fff;--text:#121826;--muted:#6b7280;--accent:#111827;--line:#e5e7eb}
+*{box-sizing:border-box} body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:linear-gradient(180deg,#f9fafb,#eef2f7);color:var(--text);min-height:100vh}
+main{max-width:760px;margin:auto;padding:64px 20px}
+h1{font-size:clamp(34px,7vw,58px);letter-spacing:-.045em;margin:0 0 10px;text-align:center}
+.sub{text-align:center;color:var(--muted);margin:0 0 34px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:24px;padding:24px;box-shadow:0 18px 60px rgba(17,24,39,.08)}
+.drop{border:2px dashed #cbd5e1;border-radius:18px;padding:48px 20px;text-align:center;cursor:pointer;transition:.2s;background:#fafafa}
+.drop.drag{border-color:#111827;background:#f3f4f6}.icon{font-size:42px;margin-bottom:12px}
+.drop strong{display:block;font-size:18px}.drop span{display:block;color:var(--muted);margin-top:6px;font-size:14px}
+input[type=file]{display:none}
+.file{display:none;margin-top:18px;padding:15px;border:1px solid var(--line);border-radius:14px;background:#fafafa}
+.file.show{display:flex;justify-content:space-between;gap:12px;align-items:center}.filename{font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.filesize{color:var(--muted);font-size:13px}
+.row{display:grid;grid-template-columns:1fr auto;gap:14px;align-items:end;margin-top:20px}
+label{display:block;font-size:13px;font-weight:700;margin-bottom:7px}
+select,button{font:inherit;border-radius:13px}
+select{width:100%;padding:13px;border:1px solid var(--line);background:#fff}
+button{border:0;background:var(--accent);color:#fff;font-weight:750;padding:14px 20px;cursor:pointer;min-width:170px}
+button:disabled{opacity:.45;cursor:not-allowed}
+.progressWrap{display:none;margin-top:22px}.progressWrap.show{display:block}
+.status{display:flex;justify-content:space-between;font-size:13px;margin-bottom:8px;color:var(--muted)}
+.bar{height:10px;background:#e5e7eb;border-radius:999px;overflow:hidden}.bar>div{height:100%;width:0;background:#111827;transition:width .15s}
+.download{display:none;margin-top:18px;text-decoration:none;text-align:center;padding:14px;border-radius:13px;background:#16a34a;color:white;font-weight:750}.download.show{display:block}
+.note{text-align:center;color:var(--muted);font-size:12px;margin:18px 4px 0}
+#error{color:#b91c1c;font-size:13px;margin-top:14px;display:none}
+@media(max-width:600px){main{padding:38px 14px}.card{padding:17px}.drop{padding:38px 14px}.row{grid-template-columns:1fr}button{width:100%}}
+</style>
+</head>
+<body>
+<main>
+<h1>Video to MP3</h1>
+<p class="sub">Extract audio from your video directly in your browser.</p>
+<section class="card">
+  <div id="drop" class="drop" role="button" tabindex="0">
+    <div class="icon">♫</div>
+    <strong>Choose a video</strong>
+    <span>Tap to browse or drag and drop a file here</span>
+  </div>
+  <input id="picker" type="file" accept="video/*,.mp4,.mov,.m4v,.webm,.mkv,.avi">
+  <div id="fileBox" class="file"><div style="min-width:0"><div id="fileName" class="filename"></div><div id="fileSize" class="filesize"></div></div><div>Video</div></div>
+  <div class="row">
+    <div><label for="quality">MP3 quality</label><select id="quality"><option value="128">128 kbps</option><option value="192" selected>192 kbps</option><option value="256">256 kbps</option><option value="320">320 kbps</option></select></div>
+    <button id="convert" disabled>Convert to MP3</button>
+  </div>
+  <div id="progressWrap" class="progressWrap">
+    <div class="status"><span id="status">Preparing converter…</span><span id="percent">0%</span></div>
+    <div class="bar"><div id="bar"></div></div>
+  </div>
+  <div id="error"></div>
+  <a id="download" class="download">Download MP3</a>
+  <p class="note">Your video stays on your device. Conversion is performed locally in this browser.</p>
+</section>
+</main>
+
+<script type="module">
+const picker=document.querySelector('#picker'), drop=document.querySelector('#drop'), convert=document.querySelector('#convert'),
+fileBox=document.querySelector('#fileBox'), fileName=document.querySelector('#fileName'), fileSize=document.querySelector('#fileSize'),
+quality=document.querySelector('#quality'), progressWrap=document.querySelector('#progressWrap'), statusEl=document.querySelector('#status'),
+percent=document.querySelector('#percent'), bar=document.querySelector('#bar'), download=document.querySelector('#download'), errorEl=document.querySelector('#error');
+let chosen=null, ffmpeg=null, fetchFile=null, outputURL=null;
+
+const human=n=>n<1024*1024?(n/1024).toFixed(1)+' KB':(n/1024/1024).toFixed(1)+' MB';
+function setFile(f){if(!f)return; chosen=f;fileName.textContent=f.name;fileSize.textContent=human(f.size);fileBox.classList.add('show');convert.disabled=false;download.classList.remove('show');errorEl.style.display='none'}
+drop.onclick=()=>picker.click();drop.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();picker.click()}};
+picker.onchange=e=>setFile(e.target.files[0]);
+['dragenter','dragover'].forEach(x=>drop.addEventListener(x,e=>{e.preventDefault();drop.classList.add('drag')}));
+['dragleave','drop'].forEach(x=>drop.addEventListener(x,e=>{e.preventDefault();drop.classList.remove('drag')}));
+drop.addEventListener('drop',e=>setFile(e.dataTransfer.files[0]));
+
+async function loadFFmpeg(){
+  if(ffmpeg)return;
+  statusEl.textContent='Loading converter…';
+  const [{FFmpeg},{fetchFile:ff}] = await Promise.all([
+    import('https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js'),
+    import('https://unpkg.com/@ffmpeg/util@0.12.1/dist/esm/index.js')
+  ]);
+  fetchFile=ff; ffmpeg=new FFmpeg();
+  ffmpeg.on('progress',({progress})=>{let p=Math.max(0,Math.min(99,Math.round(progress*100)));percent.textContent=p+'%';bar.style.width=p+'%'});
+  await ffmpeg.load({
+    coreURL:'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm/ffmpeg-core.js',
+    wasmURL:'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm/ffmpeg-core.wasm'
+  });
+}
+convert.onclick=async()=>{
+  if(!chosen)return;
+  convert.disabled=true;download.classList.remove('show');errorEl.style.display='none';progressWrap.classList.add('show');percent.textContent='0%';bar.style.width='0%';
+  try{
+    await loadFFmpeg();
+    statusEl.textContent='Converting…';
+    const ext=(chosen.name.split('.').pop()||'mp4').replace(/[^a-z0-9]/gi,'').toLowerCase();
+    const input='input.'+ext, output='converted.mp3';
+    await ffmpeg.writeFile(input,await fetchFile(chosen));
+    await ffmpeg.exec(['-i',input,'-vn','-codec:a','libmp3lame','-b:a',quality.value+'k',output]);
+    const data=await ffmpeg.readFile(output);
+    if(outputURL)URL.revokeObjectURL(outputURL);
+    outputURL=URL.createObjectURL(new Blob([data.buffer],{type:'audio/mpeg'}));
+    download.href=outputURL;download.download=chosen.name.replace(/\.[^.]+$/,'')+'.mp3';download.classList.add('show');
+    statusEl.textContent='Conversion complete';percent.textContent='100%';bar.style.width='100%';
+    await ffmpeg.deleteFile(input);await ffmpeg.deleteFile(output);
+  }catch(e){
+    console.error(e);statusEl.textContent='Conversion failed';errorEl.textContent='This browser could not convert the file. Try a smaller video or a modern desktop/mobile browser.';errorEl.style.display='block';
+  }finally{convert.disabled=false}
+};
+</script>
+</body>
+</html>
