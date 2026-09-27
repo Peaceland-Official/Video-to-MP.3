@@ -66,6 +66,7 @@ percent=document.querySelector('#percent'),bar=document.querySelector('#bar'),do
 
 let chosen=null,ffmpeg=null,fetchFile=null,outputURL=null,converterReady=false,converterPromise=null;
 const BASE='https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm';
+const WORKER='https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/worker.js';
 const human=n=>n<1048576?(n/1024).toFixed(1)+' KB':(n/1048576).toFixed(1)+' MB';
 
 function progress(label,p){
@@ -125,23 +126,30 @@ async function loadFFmpeg(){
         import('https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/esm/index.js')
       ]);
       fetchFile=ff; progress('Loading converter code…',8);
-      const [coreURL,wasmURL]=await Promise.all([
+      const [coreURL,wasmURL,classWorkerURL]=await Promise.all([
         cachedURL(BASE+'/ffmpeg-core.js','text/javascript',(p,l)=>progress(l,8+p*.12)),
-        cachedURL(BASE+'/ffmpeg-core.wasm','application/wasm',(p,l)=>progress(l,20+p*.70))
+        cachedURL(BASE+'/ffmpeg-core.wasm','application/wasm',(p,l)=>progress(l,20+p*.65)),
+        cachedURL(WORKER,'text/javascript',(p,l)=>progress('Loading Safari worker…',85+p*.05))
       ]);
       progress('Starting audio engine…',92);
       ffmpeg=new FFmpeg();
       ffmpeg.on('progress',({progress:p})=>{
         if(converterReady)progress('Converting…',Math.max(1,Math.min(99,Math.round(p*100))));
       });
-      await ffmpeg.load({coreURL,wasmURL});
+      const startupTimeout=new Promise((_,reject)=>setTimeout(()=>reject(new Error('STARTUP_TIMEOUT')),20000));
+      await Promise.race([ffmpeg.load({coreURL,wasmURL,classWorkerURL}),startupTimeout]);
       converterReady=true; progress('Converter ready',100); button();
       setTimeout(()=>{if(!chosen)progressWrap.classList.remove('show')},1000);
     }catch(e){
       console.error(e); converterPromise=null; statusEl.textContent='Converter failed to load';
       percent.textContent='0%';bar.style.width='0%';
-      errorEl.textContent='The converter could not load. Check your internet connection and refresh the page.';
-      errorEl.style.display='block';convert.textContent='Converter unavailable';
+      errorEl.textContent=e?.message==='STARTUP_TIMEOUT'
+        ? 'Safari could not start the converter. Tap Retry converter below.'
+        : 'The converter could not load. Check your internet connection and try again.';
+      errorEl.style.display='block';
+      converterReady=false; ffmpeg=null;
+      convert.disabled=false; convert.textContent='Retry converter';
+      convert.onclick=async()=>{ converterPromise=null; errorEl.style.display='none'; convert.disabled=true; await loadFFmpeg(); };
     }
   })();
   return converterPromise;
